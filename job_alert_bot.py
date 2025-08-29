@@ -1,4 +1,4 @@
-
+from flask import Flask
 import requests
 from bs4 import BeautifulSoup
 import smtplib
@@ -8,58 +8,55 @@ import os
 import json
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
+# Load environment variables
 load_dotenv()
 
-# URL to monitor
-URL = "https://jobs.novascotia.ca/search/?createNewAlert=false&q=csds&locationsearch="
+app = Flask(__name__)
 
-# File to store previously seen jobs
+URL = os.getenv("URL")
 STORAGE_FILE = "seen_jobs.json"
 
-# Gmail credentials (use environment variables for security)
 GMAIL_USER = os.getenv("GMAIL_USER")
 GMAIL_PASS = os.getenv("GMAIL_PASS")
 RECIPIENT_EMAIL = os.getenv("RECIPIENT_EMAIL")
 
-# Function to fetch job postings
 def fetch_jobs():
     response = requests.get(URL)
     soup = BeautifulSoup(response.text, "html.parser")
     jobs = []
     for job_card in soup.select(".jobTitle a"):
         title = job_card.text.strip()
-        link = "https://jobs.novascotia.ca" + job_card.get("href")
+        href = job_card.get("href")
+        if href:
+            link = "https://jobs.novascotia.ca" + href
+        else:
+            continue
         jobs.append({"title": title, "link": link})
     return jobs
 
-# Function to load previously seen jobs
 def load_seen_jobs():
     if os.path.exists(STORAGE_FILE):
         with open(STORAGE_FILE, "r") as f:
             return json.load(f)
     return []
 
-# Function to save current jobs
 def save_jobs(jobs):
     with open(STORAGE_FILE, "w") as f:
         json.dump(jobs, f)
 
-# Function to send email
 def send_email(new_jobs):
+    if not GMAIL_USER or not GMAIL_PASS or not RECIPIENT_EMAIL:
+        print("Email credentials not configured properly")
+        return
+        
     msg = MIMEMultipart()
     msg['From'] = GMAIL_USER
     msg['To'] = RECIPIENT_EMAIL
     msg['Subject'] = "New CSDS Job Postings"
 
-    body = "Here are the new job postings:
-
-"
+    body = "Here are the new job postings:\n\n"
     for job in new_jobs:
-        body += f"{job['title']}
-{job['link']}
-
-"
+        body += f"{job['title']}\n{job['link']}\n\n"
 
     msg.attach(MIMEText(body, 'plain'))
 
@@ -67,16 +64,20 @@ def send_email(new_jobs):
         server.login(GMAIL_USER, GMAIL_PASS)
         server.send_message(msg)
 
-# Main logic
-current_jobs = fetch_jobs()
-seen_jobs = load_seen_jobs()
+@app.route("/")
+def check_jobs():
+    current_jobs = fetch_jobs()
+    seen_jobs = load_seen_jobs()
+    new_jobs = [job for job in current_jobs if job not in seen_jobs]
 
-# Detect new jobs
-new_jobs = [job for job in current_jobs if job not in seen_jobs]
+    if new_jobs:
+        send_email(new_jobs)
+        save_jobs(current_jobs)
+        return f"Sent email with {len(new_jobs)} new jobs."
+    else:
+        send_email(new_jobs)
+        save_jobs(current_jobs)
+        return "No new jobs found."
 
-if new_jobs:
-    send_email(new_jobs)
-    save_jobs(current_jobs)
-    print(f"Sent email with {len(new_jobs)} new jobs.")
-else:
-    print("No new jobs found.")
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000, debug=True)
